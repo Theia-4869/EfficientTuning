@@ -50,6 +50,25 @@ def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
     return loader
 
 
+def construct_grad_loader(cfg):
+    """Grad loader wrapper."""
+    if cfg.NUM_GPUS > 1:
+        drop_last = True
+    else:
+        drop_last = False
+    if cfg.DATA.NAME.startswith("vtab-"):
+        split = "trainval"
+    else:
+        split = "train"
+    return _construct_loader(
+        cfg=cfg,
+        split=split,
+        batch_size=int(128 / cfg.NUM_GPUS),
+        shuffle=True,
+        drop_last=drop_last,
+    )
+
+
 def construct_train_loader(cfg):
     """Train loader wrapper."""
     if cfg.NUM_GPUS > 1:

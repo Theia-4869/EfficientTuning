@@ -11,7 +11,8 @@ _C = CfgNode()
 #   from configs.config import cfg
 
 _C.DBG = False
-_C.OUTPUT_DIR = "./output"
+_C.GPU_ID = 0
+_C.OUTPUT_DIR = "./outputs"
 _C.RUN_N_TIMES = 5
 # Perform benchmarking to select the fastest CUDNN algorithms to use
 # Note that this may increase the memory usage and will likely not result
@@ -79,6 +80,14 @@ _C.MODEL.PROMPT.SAVE_FOR_EACH_EPOCH = False
 _C.MODEL.ADAPTER = CfgNode()
 _C.MODEL.ADAPTER.REDUCATION_FACTOR = 8
 _C.MODEL.ADAPTER.STYLE = "Pfeiffer"
+# ----------------------------------------------------------------------
+# subset options
+# ----------------------------------------------------------------------
+_C.MODEL.SUBSET = CfgNode()
+_C.MODEL.SUBSET.PERCENTILE = 0.1
+_C.MODEL.SUBSET.LN_GRAD = True
+_C.MODEL.SUBSET.REINITIALIZE = False
+_C.MODEL.SUBSET.REINITIALIZE_TYPE = "constant"  # "constant", "uniform", "normal", "orthogonal"
 
 # ----------------------------------------------------------------------
 # Solver options

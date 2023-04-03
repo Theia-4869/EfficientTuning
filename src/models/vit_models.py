@@ -30,8 +30,8 @@ class ViT(nn.Module):
         else:
             prompt_cfg = None
 
-        if cfg.MODEL.TRANSFER_TYPE != "end2end" and "prompt" not in cfg.MODEL.TRANSFER_TYPE:
-            # linear, cls, tiny-tl, parital, adapter
+        if cfg.MODEL.TRANSFER_TYPE != "end2end" and "prompt" not in cfg.MODEL.TRANSFER_TYPE and "subset" not in cfg.MODEL.TRANSFER_TYPE:
+            # linear, cls, tiny-tl, partial, adapter
             self.froze_enc = True
         else:
             # prompt, end2end, cls+prompt
@@ -47,18 +47,6 @@ class ViT(nn.Module):
         self.cfg = cfg
         self.setup_side()
         self.setup_head(cfg)
-
-    def setup_side(self):
-        if self.cfg.MODEL.TRANSFER_TYPE != "side":
-            self.side = None
-        else:
-            self.side_alpha = nn.Parameter(torch.tensor(0.0))
-            m = models.alexnet(pretrained=True)
-            self.side = nn.Sequential(OrderedDict([
-                ("features", m.features),
-                ("avgpool", m.avgpool),
-            ]))
-            self.side_projection = nn.Linear(9216, self.feat_dim, bias=False)
 
     def build_backbone(self, prompt_cfg, cfg, adapter_cfg, load_pretrain, vis):
         transfer_type = cfg.MODEL.TRANSFER_TYPE
@@ -97,7 +85,7 @@ class ViT(nn.Module):
 
         elif transfer_type == "prompt" and prompt_cfg.LOCATION == "below":
             for k, p in self.enc.named_parameters():
-                if "prompt" not in k and "embeddings.patch_embeddings.weight" not in k  and "embeddings.patch_embeddings.bias" not in k:
+                if "prompt" not in k and "embeddings.patch_embeddings.weight" not in k and "embeddings.patch_embeddings.bias" not in k:
                     p.requires_grad = False
 
         elif transfer_type == "prompt":
@@ -151,10 +139,25 @@ class ViT(nn.Module):
 
         elif transfer_type == "end2end":
             logger.info("Enable all parameters update during training")
+            
+        elif transfer_type == "subset":
+            logger.info("Use gradient to select the subset of parameters update during training")
 
         else:
             raise ValueError("transfer type {} is not supported".format(
                 transfer_type))
+
+    def setup_side(self):
+        if self.cfg.MODEL.TRANSFER_TYPE != "side":
+            self.side = None
+        else:
+            self.side_alpha = nn.Parameter(torch.tensor(0.0))
+            m = models.alexnet(pretrained=True)
+            self.side = nn.Sequential(OrderedDict([
+                ("features", m.features),
+                ("avgpool", m.avgpool),
+            ]))
+            self.side_projection = nn.Linear(9216, self.feat_dim, bias=False)
 
     def setup_head(self, cfg):
         self.head = MLP(

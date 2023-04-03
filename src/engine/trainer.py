@@ -41,7 +41,7 @@ class Trainer():
         self.device = device
 
         # solver related
-        logger.info("\tSetting up the optimizer...")
+        logger.info("Setting up the optimizer...")
         self.optimizer = make_optimizer([self.model], cfg.SOLVER)
         self.scheduler = make_scheduler(self.optimizer, cfg.SOLVER)
         self.cls_criterion = build_loss(self.cfg)
@@ -128,6 +128,96 @@ class Trainer():
         inputs = data["image"].float()
         labels = data["label"]
         return inputs, labels
+    
+    def get_gradient(self, train_loader):
+        """
+        Get the gradient in only 1 epoch
+        """
+        self.cls_weights = train_loader.dataset.get_class_weights(
+            self.cfg.DATA.CLASS_WEIGHTS_TYPE)
+        
+        # Enable training mode
+        self.model.train()
+        self.optimizer.zero_grad()
+        
+        logger.info("Calculating gradient...")
+        end = time.time()
+        
+        for idx, input_data in enumerate(train_loader):
+            inputs, targets = self.get_input(input_data)
+            
+            # move data to device
+            inputs = inputs.to(self.device, non_blocking=True)    # (batchsize, 2048)
+            targets = targets.to(self.device, non_blocking=True)  # (batchsize, )
+            
+            with torch.set_grad_enabled(True):
+                outputs = self.model(inputs)  # (batchsize, num_cls)
+                loss = self.cls_criterion(outputs, targets, self.cls_weights)
+
+                if loss == float('inf'):
+                    logger.info(
+                        "encountered infinite loss, skip gradient updating for this batch!"
+                    )
+                    continue
+                elif torch.isnan(loss).any():
+                    logger.info(
+                        "encountered nan loss, skip gradient updating for this batch!"
+                    )
+                    continue
+
+            loss.backward()
+        
+        logger.info("Gradient calculation time: {:.2f}".format(time.time() - end))
+            
+    def select_subset(self):
+        """
+        Select the subset in model to update
+        """
+        logger.info("Selecting gradient...")
+        grad_mean_square = []
+        for name, param in self.model.named_parameters():
+            if "transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                grad_mean_square.append(torch.mean(torch.square(param.grad)))
+        
+        thresh = torch.quantile(torch.tensor(grad_mean_square), 1 - self.cfg.MODEL.SUBSET.PERCENTILE)
+        for name, param in self.model.named_parameters():
+            if "transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif torch.mean(torch.square(param.grad)) > thresh:
+                    if self.cfg.MODEL.SUBSET.REINITIALIZE:
+                        if self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "constant":
+                            if "weight" in name:
+                                torch.nn.init.constant(param, 1.0)
+                            elif "bias" in name:
+                                torch.nn.init.constant(param, 0.0)
+                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "uniform":
+                            if "weight" in name:
+                                torch.nn.init.uniform_(param, -0.02, 0.02)
+                            elif "bias" in name:
+                                torch.nn.init.constant(param, 0.0)
+                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "normal":
+                            if "weight" in name:
+                                torch.nn.init.normal_(param, 0.0, 0.02)
+                            elif "bias" in name:
+                                torch.nn.init.constant(param, 0.0)
+                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "orthogonal":
+                            if "weight" in name:
+                                torch.nn.init.orthogonal_(param)
+                            elif "bias" in name:
+                                torch.nn.init.constant(param, 0.0)                    
+                else:
+                    param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+        self.optimizer.zero_grad()
+        
+        logger.info("Show subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
 
     def train_classifier(self, train_loader, val_loader, test_loader):
         """

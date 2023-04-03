@@ -3,7 +3,7 @@ NUM_SHARDS: 1
 OUTPUT_DIR: ""
 RUN_N_TIMES: 1
 MODEL:
-  TRANSFER_TYPE: "linear"
+  TRANSFER_TYPE: "subset"
   TYPE: "vit"
   LINEAR:
     MLP_SIZES: []
@@ -23,3 +23,4 @@ DATA:
   DATAPATH: ""
   FEATURE: "sup_vitb16_224"
   BATCH_SIZE: 1024
+  NUM_WORKERS: 8

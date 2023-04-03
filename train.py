@@ -17,7 +17,7 @@ from src.configs.config import get_cfg
 from src.data import loader as data_loader
 from src.engine.evaluator import Evaluator
 from src.engine.trainer import Trainer
-from src.models.build_model import build_model
+from src.models.build_model import build_model, log_model_info
 from src.utils.file_io import PathManager
 
 from launch import default_argument_parser, logging_train_setup
@@ -33,7 +33,7 @@ def setup(args):
     cfg.merge_from_list(args.opts)
 
     # setup dist
-    cfg.DIST_INIT_PATH = "tcp://{}:12399".format(os.environ["SLURMD_NODENAME"])
+    # cfg.DIST_INIT_PATH = "tcp://{}:12399".format(os.environ["SLURMD_NODENAME"])
 
     # setup output dir
     # output_dir / data_name / feature_name / lr_wd / run1
@@ -86,6 +86,7 @@ def train(cfg, args):
     # clear up residual cache from previous runs
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.GPU_ID)
 
     # main training / eval actions here
 
@@ -107,6 +108,13 @@ def train(cfg, args):
     evaluator = Evaluator()
     logger.info("Setting up Trainer...")
     trainer = Trainer(cfg, model, evaluator, cur_device)
+
+    if cfg.MODEL.TRANSFER_TYPE == "subset":
+        grad_loader = data_loader.construct_grad_loader(cfg)
+        trainer.get_gradient(grad_loader)
+        trainer.select_subset()
+        logger.info("After selecting the subset:")
+        log_model_info(model)
 
     if train_loader:
         trainer.train_classifier(train_loader, val_loader, test_loader)
