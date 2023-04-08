@@ -1,18 +1,18 @@
 #!/bin/bash
 
-gpu_id=1
+gpu_id=5
 model_root=models
-data_path=datasets/FGVC/CUB_200_2011
+data_path=datasets/FGVC/StanfordCars
 output_dir=outputs/FGVC/subset/tune_adamw
 
-# rm logs/subset/cub.log
+# rm logs/subset/cars.log
 
 CUDA_VISIBLE_DEVICES=${gpu_id} python tune_fgvc.py \
-    --config-file configs/subset/cub.yaml \
+    --config-file configs/subset/cars.yaml \
     --train-type "subset" \
     MODEL.TYPE "vit" \
     DATA.BATCH_SIZE "128" \
-    MODEL.SUBSET.PERCENTILE "0.1" \
+    MODEL.SUBSET.PERCENTILE "0.07" \
     MODEL.SUBSET.LN_GRAD "True" \
     MODEL.SUBSET.WEIGHT_AND_BIAS "True" \
     MODEL.SUBSET.TYPE "layer" \

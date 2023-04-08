@@ -1,14 +1,14 @@
 #!/bin/bash
 
-gpu_id=1
+gpu_id=3
 model_root=models
-data_path=datasets/FGVC/CUB_200_2011
+data_path=datasets/FGVC/OxfordFlowers
 output_dir=outputs/FGVC/subset/tune_adamw
 
-# rm logs/subset/cub.log
+# rm logs/subset/flowers.log
 
 CUDA_VISIBLE_DEVICES=${gpu_id} python tune_fgvc.py \
-    --config-file configs/subset/cub.yaml \
+    --config-file configs/subset/flowers.yaml \
     --train-type "subset" \
     MODEL.TYPE "vit" \
     DATA.BATCH_SIZE "128" \

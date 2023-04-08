@@ -1,9 +1,9 @@
 _BASE_: "../base-subset.yaml"
 RUN_N_TIMES: 1
 DATA:
-  NAME: "CUB"
+  NAME: "nabirds"
   DATAPATH: ""  #TODO: need to specify here
-  NUMBER_CLASSES: 200
+  NUMBER_CLASSES: 555
   MULTILABEL: False
 MODEL:
   TYPE: "vit"

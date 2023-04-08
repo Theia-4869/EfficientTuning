@@ -1,12 +1,12 @@
 _BASE_: "../base-subset.yaml"
 RUN_N_TIMES: 1
 DATA:
-  NAME: "CUB"
+  NAME: "StanfordCars"
   DATAPATH: ""  #TODO: need to specify here
-  NUMBER_CLASSES: 200
+  NUMBER_CLASSES: 196
   MULTILABEL: False
 MODEL:
   TYPE: "vit"
 SOLVER:
-  BASE_LR: 0.1
-  WEIGHT_DECAY: 0.01
+  BASE_LR: 0.001
+  WEIGHT_DECAY: 0.0001

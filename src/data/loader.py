@@ -63,7 +63,7 @@ def construct_grad_loader(cfg):
     return _construct_loader(
         cfg=cfg,
         split=split,
-        batch_size=int(128 / cfg.NUM_GPUS),
+        batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
         shuffle=True,
         drop_last=drop_last,
     )

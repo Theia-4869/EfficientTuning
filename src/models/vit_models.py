@@ -142,6 +142,16 @@ class ViT(nn.Module):
             
         elif transfer_type == "subset":
             logger.info("Use gradient to select the subset of parameters update during training")
+            
+        elif transfer_type == "layernorm":
+            for k, p in self.enc.named_parameters():
+                if 'attention_norm' not in k:
+                    p.requires_grad = False
+                # elif "weight" in k:
+                #     torch.nn.init.constant(p, 1.0)
+                # elif "bias" in k:
+                #     torch.nn.init.constant(p, 0.0)
+            logger.info("Only enable LayerNorm parameters update during training")
 
         else:
             raise ValueError("transfer type {} is not supported".format(

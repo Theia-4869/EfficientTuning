@@ -4,7 +4,9 @@ run_examples.sh
 *.zip
 
 datasets
-models
+*.npz
+*.tar
+*.pth
 outputs
 *.out
 

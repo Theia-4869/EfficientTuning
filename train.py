@@ -112,7 +112,20 @@ def train(cfg, args):
     if cfg.MODEL.TRANSFER_TYPE == "subset":
         grad_loader = data_loader.construct_grad_loader(cfg)
         trainer.get_gradient(grad_loader)
-        trainer.select_subset()
+        if cfg.MODEL.SUBSET.TYPE == "layer":
+            trainer.select_subset_by_layer()
+        elif cfg.MODEL.SUBSET.TYPE == "block":
+            trainer.select_subset_by_block()
+        else:
+            raise ValueError(f"subset type {cfg.MODEL.SUBSET.TYPE} not supported")
+        logger.info("After selecting the subset:")
+        log_model_info(model)
+    elif cfg.MODEL.TRANSFER_TYPE == "prompt" and cfg.MODEL.SUBSET.MODE == "prompt":
+        grad_loader = data_loader.construct_grad_loader(cfg)
+        for name, param in model.named_parameters():
+            param.requires_grad = True
+        trainer.get_gradient(grad_loader)
+        trainer.select_subset_by_prompt()
         logger.info("After selecting the subset:")
         log_model_info(model)
 

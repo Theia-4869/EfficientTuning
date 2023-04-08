@@ -6,12 +6,14 @@ import datetime
 import time
 import torch
 import torch.nn as nn
+from torch.nn import LayerNorm
 import os
 
 from fvcore.common.config import CfgNode
 from fvcore.common.checkpoint import Checkpointer
 
 from ..engine.evaluator import Evaluator
+from ..models.vit_subset.vit_layernorm import FrontModule, BackModule, SideModule
 from ..solver.lr_scheduler import make_scheduler
 from ..solver.optimizer import make_optimizer
 from ..solver.losses import build_loss
@@ -168,52 +170,168 @@ class Trainer():
             loss.backward()
         
         logger.info("Gradient calculation time: {:.2f}".format(time.time() - end))
+        
+    def set_module(self, model, name, module):
+        tokens = name.split('.')
+        sub_tokens = tokens[:-1]
+        cur_mod = model
+        for s in sub_tokens:
+            cur_mod = getattr(cur_mod, s)
+        setattr(cur_mod, tokens[-1], module)
             
-    def select_subset(self):
+    def select_subset_by_layer(self):
         """
-        Select the subset in model to update
+        Select the subset per layer in model to update
         """
         logger.info("Selecting gradient...")
-        grad_mean_square = []
+        grad_mean_abs = []
         for name, param in self.model.named_parameters():
-            if "transformer.encoder" in name:
+            if "enc.transformer.encoder.layer" in name:
                 if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
                     continue
-                grad_mean_square.append(torch.mean(torch.square(param.grad)))
+                grad_mean_abs.append(torch.mean(torch.abs(param.grad)))
         
-        thresh = torch.quantile(torch.tensor(grad_mean_square), 1 - self.cfg.MODEL.SUBSET.PERCENTILE)
+        thresh = torch.quantile(torch.tensor(grad_mean_abs), 1 - self.cfg.MODEL.SUBSET.PERCENTILE)
+        requires_grad = set()
         for name, param in self.model.named_parameters():
-            if "transformer.encoder" in name:
+            if "enc.transformer.encoder" in name:
                 if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
                     param.requires_grad = False
-                elif torch.mean(torch.square(param.grad)) > thresh:
-                    if self.cfg.MODEL.SUBSET.REINITIALIZE:
-                        if self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "constant":
-                            if "weight" in name:
-                                torch.nn.init.constant(param, 1.0)
-                            elif "bias" in name:
-                                torch.nn.init.constant(param, 0.0)
-                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "uniform":
-                            if "weight" in name:
-                                torch.nn.init.uniform_(param, -0.02, 0.02)
-                            elif "bias" in name:
-                                torch.nn.init.constant(param, 0.0)
-                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "normal":
-                            if "weight" in name:
-                                torch.nn.init.normal_(param, 0.0, 0.02)
-                            elif "bias" in name:
-                                torch.nn.init.constant(param, 0.0)
-                        elif self.cfg.MODEL.SUBSET.REINITIALIZE_TYPE == "orthogonal":
-                            if "weight" in name:
-                                torch.nn.init.orthogonal_(param)
-                            elif "bias" in name:
-                                torch.nn.init.constant(param, 0.0)                    
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                elif torch.mean(torch.abs(param.grad)) > thresh:
+                    requires_grad.add(".".join(name.split(".")[:-1]))            
                 else:
                     param.requires_grad = False
             elif "enc.transformer.embeddings" in name:
                 param.requires_grad = False
-        self.optimizer.zero_grad()
+                
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
         
+        # for name, module in self.model.named_modules():
+        #     if name in requires_grad:
+        #         if self.cfg.MODEL.SUBSET.MODE == "front":
+        #             self.set_module(self.model, name, FrontModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "back":
+        #             self.set_module(self.model, name, BackModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "side":
+        #             self.set_module(self.model, name, SideModule(module))
+        # logger.info(f"Subset mode: {self.cfg.MODEL.SUBSET.MODE}")
+        
+        # self.model = self.model.cuda(device=self.device)
+                
+        logger.info("Show subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
+    
+    def select_subset_by_block(self):
+        """
+        Select the subset per block in model to update
+        """
+        logger.info("Selecting gradient...")
+        grad_per_block = {}
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                idx = int(name.split(".")[4])
+                if idx in grad_per_block:
+                    grad_per_block[idx].append(torch.mean(torch.abs(param.grad)))
+                else:
+                    grad_per_block[idx] = [torch.mean(torch.abs(param.grad))]
+                    
+        grad_thresh = []
+        for idx in grad_per_block:
+            grad_thresh.append(torch.quantile(torch.tensor(grad_per_block[idx]), 1 - self.cfg.MODEL.SUBSET.PERCENTILE))
+        
+        requires_grad = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                else:
+                    idx = int(name.split(".")[4])
+                    if torch.mean(torch.abs(param.grad)) > grad_thresh[idx]:
+                        requires_grad.append(".".join(name.split(".")[:-1]))             
+                    else:
+                        param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+        
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
+                        
+        # for name, module in self.model.named_modules():
+        #     if name in requires_grad:
+        #         if self.cfg.MODEL.SUBSET.MODE == "front":
+        #             self.set_module(self.model, name, FrontModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "back":
+        #             self.set_module(self.model, name, BackModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "side":
+        #             self.set_module(self.model, name, SideModule(module))
+                    
+        # self.model = self.model.cuda(device=self.device)
+        
+        logger.info("Show subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
+    
+    def select_subset_by_prompt(self):
+        """
+        Select the subset in prompt model to update
+        """
+        logger.info("Selecting gradient...")
+        grad_mean_abs = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                grad_mean_abs.append(torch.mean(torch.abs(param.grad)))
+        
+        thresh = torch.quantile(torch.tensor(grad_mean_abs), 1 - self.cfg.MODEL.SUBSET.PERCENTILE)
+        requires_grad = set()
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                elif torch.mean(torch.abs(param.grad)) > thresh:
+                    requires_grad.add(".".join(name.split(".")[:-1]))            
+                else:
+                    param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+                
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
+        
+        # for name, module in self.model.named_modules():
+        #     if name in requires_grad:
+        #         if self.cfg.MODEL.SUBSET.MODE == "front":
+        #             self.set_module(self.model, name, FrontModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "back":
+        #             self.set_module(self.model, name, BackModule(module))
+        #         elif self.cfg.MODEL.SUBSET.MODE == "side":
+        #             self.set_module(self.model, name, SideModule(module))
+        # logger.info(f"Subset mode: {self.cfg.MODEL.SUBSET.MODE}")
+        
+        # self.model = self.model.cuda(device=self.device)
+                
         logger.info("Show subset...")
         for name, param in self.model.named_parameters():
             if param.requires_grad:
@@ -232,6 +350,7 @@ class Trainer():
         total_data = len(train_loader)
         best_epoch = -1
         best_metric = 0
+        best_test = 0
         log_interval = self.cfg.SOLVER.LOG_EVERY_N
 
         losses = AverageMeter('Loss', ':.4e')
@@ -324,8 +443,17 @@ class Trainer():
 
             # check the patience
             t_name = "val_" + val_loader.dataset.name
+            if test_loader is not None:
+                t_name_ = "test_" + test_loader.dataset.name
             try:
                 curr_acc = self.evaluator.results[f"epoch_{epoch}"]["classification"][t_name]["top1"]
+                if test_loader is not None:
+                    curr_acc_ = self.evaluator.results[f"epoch_{epoch}"]["classification"][t_name_]["top1"]
+                    if curr_acc_ > best_test:
+                        best_test = curr_acc_
+                        best_epoch_ = epoch + 1
+                        logger.info(
+                            f'Best test epoch {best_epoch_}: best test metric: {best_test:.3f}')
             except KeyError:
                 return
 
