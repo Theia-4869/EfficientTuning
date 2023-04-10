@@ -135,7 +135,6 @@ def train(cfg, args):
         
     # if args.train_type == "subset":
     #     return
-    return
 
     if train_loader:
         trainer.train_classifier(train_loader, val_loader, test_loader)
