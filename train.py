@@ -40,8 +40,12 @@ def setup(args):
     output_dir = cfg.OUTPUT_DIR
     lr = cfg.SOLVER.BASE_LR
     wd = cfg.SOLVER.WEIGHT_DECAY
+    # output_folder = os.path.join(
+    #     cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}")
+    
+    pt = cfg.MODEL.SUBSET.PERCENTILE
     output_folder = os.path.join(
-        cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}")
+        cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}", f"pt{pt}")
 
     # train cfg.RUN_N_TIMES times
     count = 1
@@ -128,6 +132,10 @@ def train(cfg, args):
         trainer.select_subset_by_prompt()
         logger.info("After selecting the subset:")
         log_model_info(model)
+        
+    # if args.train_type == "subset":
+    #     return
+    return
 
     if train_loader:
         trainer.train_classifier(train_loader, val_loader, test_loader)
