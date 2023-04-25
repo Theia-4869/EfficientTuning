@@ -45,14 +45,14 @@ def setup(args):
     
     pt = cfg.MODEL.SUBSET.PERCENTILE
     output_folder = os.path.join(
-        cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}", f"pt{pt}")
+        cfg.DATA.NAME, cfg.DATA.FEATURE, f"lr{lr}_wd{wd}_pt{pt}")
 
     # train cfg.RUN_N_TIMES times
     count = 1
     while count <= cfg.RUN_N_TIMES:
         output_path = os.path.join(output_dir, output_folder, f"run{count}")
         # pause for a random time, so concurrent process with same setting won't interfere with each other. # noqa
-        sleep(randint(3, 30))
+        sleep(randint(3, 10))
         if not PathManager.exists(output_path):
             PathManager.mkdirs(output_path)
             cfg.OUTPUT_DIR = output_path
@@ -67,12 +67,12 @@ def setup(args):
     return cfg
 
 
-def get_loaders(cfg, logger):
+def get_loaders(cfg, logger, contrastive=False):
     logger.info("Loading training data (final training data for vtab)...")
     if cfg.DATA.NAME.startswith("vtab-"):
-        train_loader = data_loader.construct_trainval_loader(cfg)
+        train_loader = data_loader.construct_trainval_loader(cfg, contrastive)
     else:
-        train_loader = data_loader.construct_train_loader(cfg)
+        train_loader = data_loader.construct_train_loader(cfg, contrastive)
 
     logger.info("Loading validation data...")
     # not really needed for vtab
@@ -105,6 +105,8 @@ def train(cfg, args):
     logger = logging.get_logger("visual_prompt")
 
     train_loader, val_loader, test_loader = get_loaders(cfg, logger)
+    logger.info("Loading gradient data ...")
+    grad_loader = data_loader.construct_grad_loader(cfg, contrastive=True)
     logger.info("Constructing models...")
     model, cur_device = build_model(cfg)
 
@@ -114,18 +116,26 @@ def train(cfg, args):
     trainer = Trainer(cfg, model, evaluator, cur_device)
 
     if cfg.MODEL.TRANSFER_TYPE == "subset":
-        grad_loader = data_loader.construct_grad_loader(cfg)
-        trainer.get_gradient(grad_loader)
-        if cfg.MODEL.SUBSET.TYPE == "layer":
-            trainer.select_subset_by_layer()
-        elif cfg.MODEL.SUBSET.TYPE == "block":
-            trainer.select_subset_by_block()
+        trainer.get_gradient(grad_loader, contrastive=True)
+        if cfg.MODEL.SUBSET.SELECT == "gradient":
+            if cfg.MODEL.SUBSET.LEVEL == "block":
+                trainer.select_subset_by_gradient_pre_block()
+            elif cfg.MODEL.SUBSET.LEVEL == "net":
+                trainer.select_subset_by_gradient_pre_net()
+            else:
+                raise NotImplementedError(f"selection level: {cfg.MODEL.SUBSET.LEVEL} not supported")
+        elif cfg.MODEL.SUBSET.SELECT == "magnitude":
+            if cfg.MODEL.SUBSET.LEVEL == "block":
+                trainer.select_subset_by_magnitude_pre_block()
+            elif cfg.MODEL.SUBSET.LEVEL == "net":
+                trainer.select_subset_by_magnitude_pre_net()
+            else:
+                raise NotImplementedError(f"selection level: {cfg.MODEL.SUBSET.LEVEL} not supported")
         else:
-            raise ValueError(f"subset type {cfg.MODEL.SUBSET.TYPE} not supported")
+            raise NotImplementedError(f"selection mode: {cfg.MODEL.SUBSET.SELECT} not supported")
         logger.info("After selecting the subset:")
         log_model_info(model)
     elif cfg.MODEL.TRANSFER_TYPE == "prompt" and cfg.MODEL.SUBSET.MODE == "prompt":
-        grad_loader = data_loader.construct_grad_loader(cfg)
         for name, param in model.named_parameters():
             param.requires_grad = True
         trainer.get_gradient(grad_loader)
@@ -133,8 +143,8 @@ def train(cfg, args):
         logger.info("After selecting the subset:")
         log_model_info(model)
         
-    # if args.train_type == "subset":
-    #     return
+    contrast_loader = grad_loader
+    trainer.train_encoder(contrast_loader)
 
     if train_loader:
         trainer.train_classifier(train_loader, val_loader, test_loader)

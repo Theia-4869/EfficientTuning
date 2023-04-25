@@ -84,13 +84,19 @@ _C.MODEL.ADAPTER.STYLE = "Pfeiffer"
 # subset options
 # ----------------------------------------------------------------------
 _C.MODEL.SUBSET = CfgNode()
-_C.MODEL.SUBSET.PERCENTILE = 0.1
+_C.MODEL.SUBSET.LEVEL = "net"  # "block", "net"
 _C.MODEL.SUBSET.LN_GRAD = True
+_C.MODEL.SUBSET.PERCENTILE = 0.1
+_C.MODEL.SUBSET.SELECT = "gradient" # "gradient", "magnitude"
 _C.MODEL.SUBSET.WEIGHT_AND_BIAS = False
-_C.MODEL.SUBSET.TYPE = "layer"  # "layer", "block"
-_C.MODEL.SUBSET.MODE = ""  # "", "side", "back", "front"
 _C.MODEL.SUBSET.REINITIALIZE = False
 _C.MODEL.SUBSET.REINITIALIZE_TYPE = "constant"  # "constant", "uniform", "normal", "orthogonal"
+
+# ----------------------------------------------------------------------
+# Method options
+# ----------------------------------------------------------------------
+_C.METHOD = CfgNode()
+_C.METHOD.CONTRASTIVE = False
 
 # ----------------------------------------------------------------------
 # Solver options

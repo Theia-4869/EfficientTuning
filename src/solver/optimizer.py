@@ -17,7 +17,7 @@ logger = logging.get_logger("visual_prompt")
 
 
 def make_optimizer(
-    models: List[Any], train_params: CfgNode
+    models: List[Any], train_params: CfgNode, lr=None
 ) -> Optimizer:
     params = []
     for model in models:
@@ -44,10 +44,16 @@ def make_optimizer(
                 {'params': [p for n, p in params
                             if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
             ]
-            optimizer = AdamW(
-                optimizer_grouped_parameters,
-                lr=train_params.BASE_LR,
-            )
+            if lr is not None:
+                optimizer = AdamW(
+                    optimizer_grouped_parameters,
+                    lr=lr,
+                )
+            else:
+                optimizer = AdamW(
+                    optimizer_grouped_parameters,
+                    lr=train_params.BASE_LR,
+                )
         else:
             _params = []
             for p in params:

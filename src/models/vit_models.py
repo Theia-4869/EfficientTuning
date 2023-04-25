@@ -191,11 +191,11 @@ class ViT(nn.Module):
             alpha_squashed = torch.sigmoid(self.side_alpha)
             x = alpha_squashed * x + (1 - alpha_squashed) * side_output
 
+        out = self.head(x)
+        
         if return_feature:
-            return x, x
-        x = self.head(x)
-
-        return x
+            return x, out
+        return out
     
     def forward_cls_layerwise(self, x):
         cls_embeds = self.enc.forward_cls_layerwise(x)

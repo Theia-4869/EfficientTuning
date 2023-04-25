@@ -25,6 +25,10 @@ def get_transforms(split, size):
                 tv.transforms.RandomHorizontalFlip(0.5),
                 # tv.transforms.RandomResizedCrop(224, scale=(0.2, 1.0)),
                 # tv.transforms.RandomHorizontalFlip(),
+                tv.transforms.RandomApply([
+                    tv.transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+                ], p=0.8),
+                tv.transforms.RandomGrayscale(p=0.2),
                 tv.transforms.ToTensor(),
                 normalize,
             ]
@@ -39,3 +43,11 @@ def get_transforms(split, size):
             ]
         )
     return transform
+
+class TwoCropTransform:
+    """Create two crops of the same image"""
+    def __init__(self, transform):
+        self.transform = transform
+
+    def __call__(self, x):
+        return [self.transform(x), self.transform(x)]

@@ -9,14 +9,14 @@ import torchvision as tv
 import numpy as np
 from collections import Counter
 
-from ..transforms import get_transforms
+from ..transforms import get_transforms, TwoCropTransform
 from ...utils import logging
 from ...utils.io_utils import read_json
 logger = logging.get_logger("visual_prompt")
 
 
 class JSONDataset(torch.utils.data.Dataset):
-    def __init__(self, cfg, split):
+    def __init__(self, cfg, split, two_crop=False):
         assert split in {
             "train",
             "val",
@@ -32,7 +32,10 @@ class JSONDataset(torch.utils.data.Dataset):
         self.data_dir = cfg.DATA.DATAPATH
         self.data_percentage = cfg.DATA.PERCENTAGE
         self._construct_imdb(cfg)
-        self.transform = get_transforms(split, cfg.DATA.CROPSIZE)
+        if two_crop:
+            self.transform = TwoCropTransform(get_transforms(split, cfg.DATA.CROPSIZE))
+        else:
+            self.transform = get_transforms(split, cfg.DATA.CROPSIZE)
 
     def get_anno(self):
         anno_path = os.path.join(self.data_dir, "{}.json".format(self._split))
@@ -126,8 +129,8 @@ class JSONDataset(torch.utils.data.Dataset):
 class CUB200Dataset(JSONDataset):
     """CUB_200 dataset."""
 
-    def __init__(self, cfg, split):
-        super(CUB200Dataset, self).__init__(cfg, split)
+    def __init__(self, cfg, split, two_crop):
+        super(CUB200Dataset, self).__init__(cfg, split, two_crop)
 
     def get_imagedir(self):
         return os.path.join(self.data_dir, "images")
@@ -136,8 +139,8 @@ class CUB200Dataset(JSONDataset):
 class CarsDataset(JSONDataset):
     """stanford-cars dataset."""
 
-    def __init__(self, cfg, split):
-        super(CarsDataset, self).__init__(cfg, split)
+    def __init__(self, cfg, split, two_crop):
+        super(CarsDataset, self).__init__(cfg, split, two_crop)
 
     def get_imagedir(self):
         return self.data_dir
@@ -146,8 +149,8 @@ class CarsDataset(JSONDataset):
 class DogsDataset(JSONDataset):
     """stanford-dogs dataset."""
 
-    def __init__(self, cfg, split):
-        super(DogsDataset, self).__init__(cfg, split)
+    def __init__(self, cfg, split, two_crop):
+        super(DogsDataset, self).__init__(cfg, split, two_crop)
 
     def get_imagedir(self):
         return os.path.join(self.data_dir, "Images")
@@ -156,8 +159,8 @@ class DogsDataset(JSONDataset):
 class FlowersDataset(JSONDataset):
     """flowers dataset."""
 
-    def __init__(self, cfg, split):
-        super(FlowersDataset, self).__init__(cfg, split)
+    def __init__(self, cfg, split, two_crop):
+        super(FlowersDataset, self).__init__(cfg, split, two_crop)
 
     def get_imagedir(self):
         return self.data_dir
@@ -166,8 +169,8 @@ class FlowersDataset(JSONDataset):
 class NabirdsDataset(JSONDataset):
     """Nabirds dataset."""
 
-    def __init__(self, cfg, split):
-        super(NabirdsDataset, self).__init__(cfg, split)
+    def __init__(self, cfg, split, two_crop):
+        super(NabirdsDataset, self).__init__(cfg, split, two_crop)
 
     def get_imagedir(self):
         return os.path.join(self.data_dir, "images")

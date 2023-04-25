@@ -20,7 +20,7 @@ _DATASET_CATALOG = {
 }
 
 
-def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
+def _construct_loader(cfg, split, batch_size, shuffle, drop_last, two_crop=False):
     """Constructs the data loader for the given dataset."""
     dataset_name = cfg.DATA.NAME
 
@@ -33,7 +33,7 @@ def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
         assert (
             dataset_name in _DATASET_CATALOG.keys()
         ), "Dataset '{}' not supported".format(dataset_name)
-        dataset = _DATASET_CATALOG[dataset_name](cfg, split)
+        dataset = _DATASET_CATALOG[dataset_name](cfg, split, two_crop)
 
     # Create a sampler for multi-process training
     sampler = DistributedSampler(dataset) if cfg.NUM_GPUS > 1 else None
@@ -50,7 +50,7 @@ def _construct_loader(cfg, split, batch_size, shuffle, drop_last):
     return loader
 
 
-def construct_grad_loader(cfg):
+def construct_grad_loader(cfg, contrastive=False):
     """Grad loader wrapper."""
     if cfg.NUM_GPUS > 1:
         drop_last = True
@@ -60,43 +60,73 @@ def construct_grad_loader(cfg):
         split = "trainval"
     else:
         split = "train"
-    return _construct_loader(
-        cfg=cfg,
-        split=split,
-        batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
-        shuffle=True,
-        drop_last=drop_last,
-    )
+    if contrastive:
+        return _construct_loader(
+            cfg=cfg,
+            split=split,
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS / 2),
+            shuffle=True,
+            drop_last=drop_last,
+            two_crop=True,
+        )
+    else:
+        return _construct_loader(
+            cfg=cfg,
+            split=split,
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
+            shuffle=True,
+            drop_last=drop_last,
+        )
 
 
-def construct_train_loader(cfg):
+def construct_train_loader(cfg, contrastive=False):
     """Train loader wrapper."""
     if cfg.NUM_GPUS > 1:
         drop_last = True
     else:
         drop_last = False
-    return _construct_loader(
-        cfg=cfg,
-        split="train",
-        batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
-        shuffle=True,
-        drop_last=drop_last,
-    )
+    if contrastive:
+        return _construct_loader(
+            cfg=cfg,
+            split="train",
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS / 2),
+            shuffle=True,
+            drop_last=drop_last,
+            two_crop=True,
+        )
+    else:
+        return _construct_loader(
+            cfg=cfg,
+            split="train",
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
+            shuffle=True,
+            drop_last=drop_last,
+        )
 
 
-def construct_trainval_loader(cfg):
+def construct_trainval_loader(cfg, contrastive=False):
     """Train loader wrapper."""
     if cfg.NUM_GPUS > 1:
         drop_last = True
     else:
         drop_last = False
-    return _construct_loader(
-        cfg=cfg,
-        split="trainval",
-        batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
-        shuffle=True,
-        drop_last=drop_last,
-    )
+    if contrastive:
+        return _construct_loader(
+            cfg=cfg,
+            split="trainval",
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS / 2),
+            shuffle=True,
+            drop_last=drop_last,
+            two_crop=True,
+        )
+    else:
+        return _construct_loader(
+            cfg=cfg,
+            split="trainval",
+            batch_size=int(cfg.DATA.BATCH_SIZE / cfg.NUM_GPUS),
+            shuffle=True,
+            drop_last=drop_last,
+        )
 
 
 def construct_test_loader(cfg):

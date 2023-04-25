@@ -46,7 +46,7 @@ class Trainer():
         logger.info("Setting up the optimizer...")
         self.optimizer = make_optimizer([self.model], cfg.SOLVER)
         self.scheduler = make_scheduler(self.optimizer, cfg.SOLVER)
-        self.cls_criterion = build_loss(self.cfg)
+        self.cls_criterion, self.con_criterion = build_loss(self.cfg)
 
         self.checkpointer = Checkpointer(
             self.model,
@@ -62,6 +62,50 @@ class Trainer():
 
         self.evaluator = evaluator
         self.cpu_device = torch.device("cpu")
+        
+    def contrast_one_batch(self, inputs, targets, is_train):
+        """Train a single (full) epoch on the model using the given
+        data loader by the contrastive loss.
+
+        Args:
+            X: input dict
+            targets
+            is_train: bool
+        Returns:
+            loss
+            outputs: output features
+        """
+        # move data to device
+        inputs = inputs.to(self.device, non_blocking=True)    # (batchsize, 2048)
+        targets = targets.to(self.device, non_blocking=True)  # (batchsize, )
+        bsz = targets.shape[0]
+
+        # forward
+        with torch.set_grad_enabled(is_train):
+            features, _ = self.model(inputs, return_feature=True)  # (batchsize*2, 768), (batchsize*2, num_cls)
+            f1, f2 = torch.split(features, [bsz, bsz], dim=0)
+            features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # (batchsize, 2, 768)
+            
+            loss = self.con_criterion(features, targets)
+
+            if loss == float('inf'):
+                logger.info(
+                    "encountered infinite loss, skip gradient updating for this batch!"
+                )
+                return -1, -1
+            elif torch.isnan(loss).any():
+                logger.info(
+                    "encountered nan loss, skip gradient updating for this batch!"
+                )
+                return -1, -1
+
+        # =======backward and optim step only if in training phase... =========
+        if is_train:
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+        return loss, features
 
     def forward_one_batch(self, inputs, targets, is_train):
         """Train a single (full) epoch on the model using the given
@@ -78,6 +122,7 @@ class Trainer():
         # move data to device
         inputs = inputs.to(self.device, non_blocking=True)    # (batchsize, 2048)
         targets = targets.to(self.device, non_blocking=True)  # (batchsize, )
+        bsz = targets.shape[0]
 
         if self.cfg.DBG:
             logger.info(f"shape of inputs: {inputs.shape}")
@@ -85,7 +130,13 @@ class Trainer():
 
         # forward
         with torch.set_grad_enabled(is_train):
-            outputs = self.model(inputs)  # (batchsize, num_cls)
+            if self.cfg.METHOD.CONTRASTIVE and is_train:
+                features, outputs = self.model(inputs, return_feature=True)  # (batchsize*2, 768), (batchsize*2, num_cls)
+                f1, f2 = torch.split(features, [bsz, bsz], dim=0)
+                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # (batchsize, 2, 768)
+                out1, out2 = torch.split(outputs, [bsz, bsz], dim=0)
+            else:
+                outputs = self.model(inputs)  # (batchsize, num_cls)
             if self.cfg.DBG:
                 logger.info(
                     "shape of model output: {}, targets: {}".format(
@@ -100,8 +151,14 @@ class Trainer():
             elif self.cls_criterion.is_local():
                 return torch.tensor(1), outputs
             else:
-                loss = self.cls_criterion(
-                    outputs, targets, self.cls_weights)
+                if self.cfg.METHOD.CONTRASTIVE and is_train:
+                    loss_con = self.con_criterion(features, targets)
+                    loss_cls = (self.cls_criterion(out1, targets, self.cls_weights) + 
+                                self.cls_criterion(out2, targets, self.cls_weights)) / 2
+                    loss = loss_con + loss_cls
+                else:
+                    loss = self.cls_criterion(
+                        outputs, targets, self.cls_weights)
 
             if loss == float('inf'):
                 logger.info(
@@ -123,6 +180,8 @@ class Trainer():
         return loss, outputs
 
     def get_input(self, data):
+        if isinstance(data["image"], list):
+            data["image"] = torch.cat([data["image"][0], data["image"][1]], dim=0)
         if not isinstance(data["image"], torch.Tensor):
             for k, v in data.items():
                 data[k] = torch.from_numpy(v)
@@ -131,11 +190,11 @@ class Trainer():
         labels = data["label"]
         return inputs, labels
     
-    def get_gradient(self, train_loader):
+    def get_gradient(self, grad_loader, contrastive=False):
         """
         Get the gradient in only 1 epoch
         """
-        self.cls_weights = train_loader.dataset.get_class_weights(
+        self.cls_weights = grad_loader.dataset.get_class_weights(
             self.cfg.DATA.CLASS_WEIGHTS_TYPE)
         
         # Enable training mode
@@ -145,16 +204,23 @@ class Trainer():
         logger.info("Calculating gradient...")
         end = time.time()
         
-        for idx, input_data in enumerate(train_loader):
+        for idx, input_data in enumerate(grad_loader):
             inputs, targets = self.get_input(input_data)
             
             # move data to device
-            inputs = inputs.to(self.device, non_blocking=True)    # (batchsize, 2048)
+            inputs = inputs.to(self.device, non_blocking=True)    # (batchsize*2, 2048)
             targets = targets.to(self.device, non_blocking=True)  # (batchsize, )
+            bsz = targets.shape[0]
             
             with torch.set_grad_enabled(True):
-                outputs = self.model(inputs)  # (batchsize, num_cls)
-                loss = self.cls_criterion(outputs, targets, self.cls_weights)
+                if contrastive:
+                    features, _ = self.model(inputs, return_feature=True)  # (batchsize*2, 768)
+                    f1, f2 = torch.split(features, [bsz, bsz], dim=0)
+                    outputs = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # (batchsize, 2, 768)
+                    loss = self.con_criterion(outputs, targets)
+                else:
+                    outputs = self.model(inputs)  # (batchsize, num_cls)
+                    loss = self.cls_criterion(outputs, targets, self.cls_weights)
 
                 if loss == float('inf'):
                     logger.info(
@@ -170,6 +236,50 @@ class Trainer():
             loss.backward()
         
         logger.info("Gradient calculation time: {:.2f}".format(time.time() - end))
+    
+    def print_subset_by_magnitude_pre_net(self):
+        """
+        Print the subset of layers by magnitude in the net level to update
+        """
+        logger.info("Selecting the subset by magnitude in the net level...")
+        magn_mean_abs = {}
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                magn_mean_abs[name] = torch.mean(torch.abs(param.data))
+        magn_mean_abs = sorted(magn_mean_abs.items(), key=lambda x: -x[1])
+        for item in magn_mean_abs:
+            logger.info(item[0])
+        
+        logger.info("Showing subset...")
+        select_num = int(len(magn_mean_abs) * 0.1)
+        select_subset = magn_mean_abs[:select_num]
+        select_subset = sorted(select_subset, key=lambda x: x[0])
+        for item in select_subset:
+            logger.info(item[0])
+    
+    def print_subset_by_gradient_pre_net(self):
+        """
+        Select the subset of layers by gradient in the net level to update
+        """
+        logger.info("Selecting the subset by gradient in the net level...")
+        grad_mean_abs = {}
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                grad_mean_abs[name] = torch.mean(torch.abs(param.grad))
+        grad_mean_abs = sorted(grad_mean_abs.items(), key=lambda x: -x[1])
+        for item in grad_mean_abs:
+            logger.info(item[0])
+        
+        logger.info("Showing subset...")
+        select_num = int(len(grad_mean_abs) * 0.1)
+        select_subset = grad_mean_abs[:select_num]
+        select_subset = sorted(select_subset, key=lambda x: x[0])
+        for item in select_subset:
+            logger.info(item[0])
         
     def set_module(self, model, name, module):
         tokens = name.split('.')
@@ -178,12 +288,151 @@ class Trainer():
         for s in sub_tokens:
             cur_mod = getattr(cur_mod, s)
         setattr(cur_mod, tokens[-1], module)
-            
-    def select_subset_by_layer(self):
+        
+    def select_subset_by_magnitude_pre_block(self):
         """
-        Select the subset per layer in model to update
+        Select the subset of layers by magnitude in the block level to update
         """
-        logger.info("Selecting gradient...")
+        logger.info("Selecting the subset by magnitude in the block level...")
+        magn_mean_abs = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                magn_mean_abs.append(torch.mean(torch.abs(param.data)))
+        
+        magn_per_block = {}
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                idx = int(name.split(".")[4])
+                if idx in magn_per_block:
+                    magn_per_block[idx].append(torch.mean(torch.abs(param.data)))
+                else:
+                    magn_per_block[idx] = [torch.mean(torch.abs(param.data))]
+        
+        magn_thresh = []
+        for idx in magn_per_block:
+            magn_thresh.append(torch.quantile(torch.tensor(magn_per_block[idx]), 1 - self.cfg.MODEL.SUBSET.PERCENTILE))
+        
+        requires_grad = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                else:
+                    idx = int(name.split(".")[4])
+                    if torch.mean(torch.abs(param.data)) > magn_thresh[idx]:
+                        requires_grad.append(".".join(name.split(".")[:-1]))             
+                    else:
+                        param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+        
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
+        
+        logger.info("Showing subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
+    
+    def select_subset_by_magnitude_pre_net(self):
+        """
+        Select the subset of layers by magnitude in the net level to update
+        """
+        logger.info("Selecting the subset by magnitude in the net level...")
+        magn_mean_abs = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                magn_mean_abs.append(torch.mean(torch.abs(param.data)))
+        
+        thresh = torch.quantile(torch.tensor(magn_mean_abs), 1 - self.cfg.MODEL.SUBSET.PERCENTILE)
+        requires_grad = set()
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                elif torch.mean(torch.abs(param.grad)) > thresh:
+                    requires_grad.add(".".join(name.split(".")[:-1]))            
+                else:
+                    param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+                
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
+        
+        logger.info("Showing subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
+    
+    def select_subset_by_gradient_pre_block(self):
+        """
+        Select the subset of layers by gradient in the block level to update
+        """
+        logger.info("Selecting the subset by gradient in the block level...")
+        grad_per_block = {}
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder.layer" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    continue
+                idx = int(name.split(".")[4])
+                if idx in grad_per_block:
+                    grad_per_block[idx].append(torch.mean(torch.abs(param.grad)))
+                else:
+                    grad_per_block[idx] = [torch.mean(torch.abs(param.grad))]
+        
+        grad_thresh = []
+        for idx in grad_per_block:
+            grad_thresh.append(torch.quantile(torch.tensor(grad_per_block[idx]), 1 - self.cfg.MODEL.SUBSET.PERCENTILE))
+        
+        requires_grad = []
+        for name, param in self.model.named_parameters():
+            if "enc.transformer.encoder" in name:
+                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
+                    param.requires_grad = False
+                elif "encoder_norm" in name:
+                    param.requires_grad = False
+                else:
+                    idx = int(name.split(".")[4])
+                    if torch.mean(torch.abs(param.grad)) > grad_thresh[idx]:
+                        requires_grad.append(".".join(name.split(".")[:-1]))             
+                    else:
+                        param.requires_grad = False
+            elif "enc.transformer.embeddings" in name:
+                param.requires_grad = False
+        
+        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
+            for name, param in self.model.named_parameters():
+                for requires_name in requires_grad:
+                    if requires_name in name:
+                        param.requires_grad = True
+        
+        logger.info("Showing subset...")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                logger.info(name)
+    
+    def select_subset_by_gradient_pre_net(self):
+        """
+        Select the subset of layers by gradient in the net level to update
+        """
+        logger.info("Selecting the subset by gradient in the net level...")
         grad_mean_abs = []
         for name, param in self.model.named_parameters():
             if "enc.transformer.encoder.layer" in name:
@@ -212,77 +461,7 @@ class Trainer():
                     if requires_name in name:
                         param.requires_grad = True
         
-        # for name, module in self.model.named_modules():
-        #     if name in requires_grad:
-        #         if self.cfg.MODEL.SUBSET.MODE == "front":
-        #             self.set_module(self.model, name, FrontModule(module))
-        #         elif self.cfg.MODEL.SUBSET.MODE == "back":
-        #             self.set_module(self.model, name, BackModule(module))
-        #         elif self.cfg.MODEL.SUBSET.MODE == "side":
-        #             self.set_module(self.model, name, SideModule(module))
-        # logger.info(f"Subset mode: {self.cfg.MODEL.SUBSET.MODE}")
-        
-        # self.model = self.model.cuda(device=self.device)
-                
-        logger.info("Show subset...")
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                logger.info(name)
-    
-    def select_subset_by_block(self):
-        """
-        Select the subset per block in model to update
-        """
-        logger.info("Selecting gradient...")
-        grad_per_block = {}
-        for name, param in self.model.named_parameters():
-            if "enc.transformer.encoder.layer" in name:
-                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
-                    continue
-                idx = int(name.split(".")[4])
-                if idx in grad_per_block:
-                    grad_per_block[idx].append(torch.mean(torch.abs(param.grad)))
-                else:
-                    grad_per_block[idx] = [torch.mean(torch.abs(param.grad))]
-                    
-        grad_thresh = []
-        for idx in grad_per_block:
-            grad_thresh.append(torch.quantile(torch.tensor(grad_per_block[idx]), 1 - self.cfg.MODEL.SUBSET.PERCENTILE))
-        
-        requires_grad = []
-        for name, param in self.model.named_parameters():
-            if "enc.transformer.encoder" in name:
-                if not self.cfg.MODEL.SUBSET.LN_GRAD and "norm" in name:
-                    param.requires_grad = False
-                elif "encoder_norm" in name:
-                    param.requires_grad = False
-                else:
-                    idx = int(name.split(".")[4])
-                    if torch.mean(torch.abs(param.grad)) > grad_thresh[idx]:
-                        requires_grad.append(".".join(name.split(".")[:-1]))             
-                    else:
-                        param.requires_grad = False
-            elif "enc.transformer.embeddings" in name:
-                param.requires_grad = False
-        
-        if self.cfg.MODEL.SUBSET.WEIGHT_AND_BIAS:
-            for name, param in self.model.named_parameters():
-                for requires_name in requires_grad:
-                    if requires_name in name:
-                        param.requires_grad = True
-                        
-        # for name, module in self.model.named_modules():
-        #     if name in requires_grad:
-        #         if self.cfg.MODEL.SUBSET.MODE == "front":
-        #             self.set_module(self.model, name, FrontModule(module))
-        #         elif self.cfg.MODEL.SUBSET.MODE == "back":
-        #             self.set_module(self.model, name, BackModule(module))
-        #         elif self.cfg.MODEL.SUBSET.MODE == "side":
-        #             self.set_module(self.model, name, SideModule(module))
-                    
-        # self.model = self.model.cuda(device=self.device)
-        
-        logger.info("Show subset...")
+        logger.info("Showing subset...")
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 logger.info(name)
@@ -337,6 +516,118 @@ class Trainer():
             if param.requires_grad:
                 logger.info(name)
 
+    def train_encoder(self, train_loader):
+        """
+        Train a encoder using epoch
+        """
+        # save the model prompt if required before training
+        self.model.eval()
+        self.save_prompt(0)
+
+        # setup training epoch params
+        total_epoch = self.cfg.SOLVER.TOTAL_EPOCH
+        total_data = len(train_loader)
+        log_interval = self.cfg.SOLVER.LOG_EVERY_N
+
+        losses = AverageMeter('Loss', ':.4e')
+        batch_time = AverageMeter('Time', ':6.3f')
+        data_time = AverageMeter('Data', ':6.3f')
+
+        self.cls_weights = train_loader.dataset.get_class_weights(
+            self.cfg.DATA.CLASS_WEIGHTS_TYPE)
+        # logger.info(f"class weights: {self.cls_weights}")
+        
+        logger.info("Contrastive training started ...")
+
+        for epoch in range(total_epoch):
+            # reset averagemeters to measure per-epoch results
+            losses.reset()
+            batch_time.reset()
+            data_time.reset()
+
+            lr = self.scheduler.get_lr()[0]
+            logger.info(
+                "Training {} / {} epoch, with learning rate {}".format(
+                    epoch + 1, total_epoch, lr
+                )
+            )
+
+            # Enable training mode
+            self.model.train()
+
+            end = time.time()
+
+            for idx, input_data in enumerate(train_loader):
+                if self.cfg.DBG and idx == 20:
+                    # if debugging, only need to see the first few iterations
+                    break
+                
+                X, targets = self.get_input(input_data)
+                # logger.info(X.shape)
+                # logger.info(targets.shape)
+                # measure data loading time
+                data_time.update(time.time() - end)
+
+                train_loss, _ = self.contrast_one_batch(X, targets, True)
+
+                if train_loss == -1:
+                    # continue
+                    return None
+
+                losses.update(train_loss.item(), X.shape[0])
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                # log during one batch
+                if (idx + 1) % log_interval == 0:
+                    seconds_per_batch = batch_time.val
+                    eta = datetime.timedelta(seconds=int(
+                        seconds_per_batch * (total_data - idx - 1) + seconds_per_batch*total_data*(total_epoch-epoch-1)))
+                    logger.info(
+                        "\tTraining {}/{}. train loss: {:.4f},".format(
+                            idx + 1,
+                            total_data,
+                            train_loss
+                        )
+                        + "\t{:.4f} s / batch. (data: {:.2e}). ETA={}, ".format(
+                            seconds_per_batch,
+                            data_time.val,
+                            str(eta),
+                        )
+                        + "max mem: {:.1f} GB ".format(gpu_mem_usage())
+                    )
+            logger.info(
+                "Epoch {} / {}: ".format(epoch + 1, total_epoch)
+                + "avg data time: {:.2e}, avg batch time: {:.4f}, ".format(
+                    data_time.avg, batch_time.avg)
+                + "average train loss: {:.4f}".format(losses.avg))
+             # update lr, scheduler.step() must be called after optimizer.step() according to the docs: https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate  # noqa
+            self.scheduler.step()
+
+            # Enable eval mode
+            self.model.eval()
+
+            self.save_prompt(epoch + 1)
+            
+        logger.info("Contrastive training completed ...")
+        
+        # froze the backbone
+        # for name, param in self.model.named_parameters():
+        #     if "enc" in name:
+        #         param.requires_grad = False
+        self.optimizer = make_optimizer([self.model], self.cfg.SOLVER, lr=0.005)
+        self.scheduler = make_scheduler(self.optimizer, self.cfg.SOLVER)
+
+        # save the last checkpoints
+        # if self.cfg.MODEL.SAVE_CKPT:
+        #     Checkpointer(
+        #         self.model,
+        #         save_dir=self.cfg.OUTPUT_DIR,
+        #         save_to_disk=True
+        #     ).save("last_model")
+    
     def train_classifier(self, train_loader, val_loader, test_loader):
         """
         Train a classifier using epoch
